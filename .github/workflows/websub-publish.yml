@@ -36,9 +36,12 @@ jobs:
           rss = rss_path.read_text(encoding="utf-8")
 
           self_link = '\t\t<atom:link href="https://abnormal032.github.io/personalised-gpt-news/feed.xml" rel="self" type="application/rss+xml" />'
-          hub_link = '\t\t<atom:link href="https://websubhub.com/hub" rel="hub" />'
+          old_hub_link = '\t\t<atom:link href="https://websubhub.com/hub" rel="hub" />'
+          hub_link = '\t\t<atom:link href="https://pubsubhubbub.appspot.com/" rel="hub" />'
 
-          if hub_link not in rss:
+          if old_hub_link in rss:
+              rss = rss.replace(old_hub_link, hub_link, 1)
+          elif hub_link not in rss:
               if self_link not in rss:
                   raise SystemExit("Canonical atom:self link not found; refusing to modify RSS")
               rss = rss.replace(self_link, self_link + "\n" + hub_link, 1)
@@ -84,15 +87,15 @@ jobs:
             exit 1
           fi
 
-      - name: Notify WebSubHub
+      - name: Notify WebSub hub
         shell: bash
         env:
           TOPIC_URL: https://abnormal032.github.io/personalised-gpt-news/feed.xml
-          HUB_URL: https://websubhub.com/hub
+          HUB_URL: https://pubsubhubbub.appspot.com/
         run: |
-          curl --fail --silent --show-error --location \
+          curl --fail --silent --show-error \
             --retry 3 --retry-all-errors \
             --header "Content-Type: application/x-www-form-urlencoded" \
             --data-urlencode "hub.mode=publish" \
-            --data-urlencode "hub.topic=${TOPIC_URL}" \
+            --data-urlencode "hub.url=${TOPIC_URL}" \
             "${HUB_URL}"
