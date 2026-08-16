@@ -1,4 +1,5 @@
 name: Publish WebSub update
+# Editing this workflow is also a safe manual trigger for a WebSub publish test.
 
 on:
   push:
