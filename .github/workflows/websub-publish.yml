@@ -1,0 +1,98 @@
+name: Publish WebSub update
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - feed.xml
+      - .github/workflows/websub-publish.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: websub-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ensure WebSub hub is advertised
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          rss_path = Path("rss.rss")
+          feed_path = Path("feed.xml")
+          rss = rss_path.read_text(encoding="utf-8")
+
+          self_link = '\t\t<atom:link href="https://abnormal032.github.io/personalised-gpt-news/feed.xml" rel="self" type="application/rss+xml" />'
+          hub_link = '\t\t<atom:link href="https://websubhub.com/hub" rel="hub" />'
+
+          if hub_link not in rss:
+              if self_link not in rss:
+                  raise SystemExit("Canonical atom:self link not found; refusing to modify RSS")
+              rss = rss.replace(self_link, self_link + "\n" + hub_link, 1)
+
+          rss_path.write_text(rss, encoding="utf-8")
+          feed_path.write_text(rss, encoding="utf-8")
+          PY
+
+      - name: Commit WebSub metadata if needed
+        shell: bash
+        run: |
+          if ! git diff --quiet -- rss.rss feed.xml; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add rss.rss feed.xml
+            git commit -m "Keep WebSub metadata in RSS"
+            git push
+          fi
+
+      - name: Wait until GitHub Pages serves the current feed
+        shell: bash
+        env:
+          TOPIC_URL: https://abnormal032.github.io/personalised-gpt-news/feed.xml
+        run: |
+          expected="$(sha256sum feed.xml | awk '{print $1}')"
+          ready=false
+
+          for attempt in $(seq 1 36); do
+            if curl --fail --silent --show-error --location \
+              "${TOPIC_URL}?websub_check=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${attempt}" \
+              --output /tmp/public-feed.xml; then
+              actual="$(sha256sum /tmp/public-feed.xml | awk '{print $1}')"
+              if [ "$actual" = "$expected" ]; then
+                ready=true
+                break
+              fi
+            fi
+            sleep 10
+          done
+
+          if [ "$ready" != "true" ]; then
+            echo "GitHub Pages did not serve the current feed within 6 minutes."
+            exit 1
+          fi
+
+      - name: Notify WebSubHub
+        shell: bash
+        env:
+          TOPIC_URL: https://abnormal032.github.io/personalised-gpt-news/feed.xml
+          HUB_URL: https://websubhub.com/hub
+        run: |
+          curl --fail --silent --show-error --location \
+            --retry 3 --retry-all-errors \
+            --header "Content-Type: application/x-www-form-urlencoded" \
+            --data-urlencode "hub.mode=publish" \
+            --data-urlencode "hub.topic=${TOPIC_URL}" \
+            "${HUB_URL}"
