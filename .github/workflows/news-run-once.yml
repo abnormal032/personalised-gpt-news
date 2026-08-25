@@ -1,0 +1,117 @@
+name: One-time news publication
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/news-run-once.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.event.head_commit.message == 'Prepare one-time news publication'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build synchronized RSS
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from urllib.parse import quote
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          import re, xml.etree.ElementTree as ET
+
+          src = Path('rss.rss').read_text(encoding='utf-8')
+          old = src
+          expected1 = '<?xml version="1.0" encoding="UTF-8"?>'
+          expected2 = '<rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:content="http://purl.org/rss/1.0/modules/content/">'
+          lines = src.splitlines()
+          assert lines[0] == expected1 and lines[1] == expected2
+          old_items = re.findall(r'\n\t\t<item>.*?\n\t\t</item>', src, flags=re.S)
+          old_guids = re.findall(r'<guid isPermaLink="false">([^<]+)</guid>', src)
+
+          now = datetime.now(ZoneInfo('Pacific/Auckland'))
+          pub = now.strftime('%a, %d %b %Y %H:%M:%S %z')
+          guid = 'personalised-gpt-news-' + now.strftime('%Y-%m-%dT%H-%M-%S') + now.strftime('%z')[:3] + '-' + now.strftime('%z')[3:]
+          headline = 'Fire Strike, Crypto Moves and New Travel Choices'
+          desc = 'A fire-service strike, crypto changes, Australian rules, new travel links and practical technology releases lead this briefing.'
+          intro = 'A national fire-service disruption leads a tightly filtered briefing spanning market access, Australian living rules, travel options, privacy and practical work tools.'
+          items = [
+            ('Fire-service strike will slow some emergency responses.', 'Professional firefighters will stop work nationwide from 12pm to 1pm on 26 August; Fire and Emergency says 111 calls will still be answered, but some emergencies in cities and larger towns may have longer response times.', '26 Aug 2026', 'https://www.fireandemergency.nz/nzpfu-collective-bargaining-and-industrial-action-2025/'),
+            ('Ethereum crossed the special seven-day move threshold.', 'Ethereum moved about 35% from an intraday low near US$1,886 on 18 August to a high near US$2,547 on 22 August, clearing the briefing’s roughly 30% seven-day threshold.', '18–22 Aug 2026', 'https://www.okx.com/en-au/price-history/ethereum-eth'),
+            ('Grayscale launched a US-listed Zcash ETF.', 'Grayscale’s Zcash Trust converted into the ZCSH exchange-traded fund and began trading on NYSE Arca, adding a listed US vehicle for Zcash exposure.', '25 Aug 2026', 'https://www.theblock.co/news/regulation/2026-08-25-grayscale-debuts-zcash-etf-412654'),
+            ('Victoria set new rental energy standards from March.', 'Victoria’s phased rental minimum standards begin on 1 March 2027 and cover heating and cooling, hot water, showerheads, ceiling insulation and draught sealing; new leases will trigger specified upgrade requirements.', '25 Aug 2026', 'https://www.consumer.vic.gov.au/resources-and-tools/legislation/public-consultations-and-reviews/new-minimum-energy-efficiency-standards'),
+            ('Australia standardised mobile coverage maps and outage records.', 'Australian telcos must now publish comparable 4G and 5G coverage maps using four standard signal levels and maintain public registers of resolved major and significant outages.', '30 Jun 2026', 'https://www.acma.gov.au/articles/2026-06/new-telco-transparency-rules-now-force'),
+            ('Australia’s SMS Sender ID Register is now live.', 'From 1 July, registered branded SMS sender IDs can keep their organisation name, while unregistered branded IDs are labelled “Unverified” and grouped into a common thread on supported services.', '1 Jul 2026', 'https://www.acma.gov.au/articles/2026-06/sms-sender-id-register-goes-live-help-protect-australians-scams'),
+            ('Wellington’s Toi Aro opened new bookable creative spaces.', 'Toi Aro moved to 3 Market Lane and opened bookable dance studios, multipurpose and cultural spaces plus hot desks, creating a new central-Wellington option for rehearsals, workshops and creative work.', '2 Jul 2026', 'https://toiponeke.nz/new-home-faq'),
+            ('Proton VPN released its new protocol engine in beta.', 'Proton VPN released a Rust-based client protocol engine in beta for Windows, Android and the Linux GUI, including Stealth support on Linux and a shared codebase intended to keep protocol features aligned across platforms.', 'Aug 2026', 'https://protonvpn.com/blog/introducing-proton-protocols'),
+            ('Australian non-bank lenders joined Consumer Data Right.', 'From 13 July, covered non-bank lenders began sharing product data such as interest rates, fees, charges and eligibility criteria through Australia’s Consumer Data Right, widening the data available to comparison services.', '13 Jul 2026', 'https://www.accc.gov.au/media-release/non-bank-lenders-join-consumer-data-right-as-next-stage-commences'),
+            ('Spider-Man: Brand New Day is now in New Zealand cinemas.', 'Spider-Man: Brand New Day has opened in New Zealand cinemas, making Sony’s major new Spider-Man theatrical release available locally rather than remaining an announced or trailer-only title.', '30 Jul 2026', 'https://www.eventcinemas.co.nz/Movie/Spider-Man-Brand-New-Day'),
+            ('Christchurch gained direct flights to Port Vila.', 'Solomon Airlines began twice-weekly non-stop Christchurch–Port Vila flights, adding a direct South Island route to Vanuatu.', '2 Jul 2026', 'https://www.christchurchairport.co.nz/about-us/who-we-are/media/2026/christchurch-takes-off-to-vanuatu/'),
+            ('Christchurch gained seasonal direct flights to Rarotonga.', 'Air New Zealand began seasonal non-stop Christchurch–Rarotonga service running through 24 October, with up to three flights a week and about 19,600 seats across the season.', '26 May 2026', 'https://www.christchurchairport.nz/about-us/who-we-are/media/2026/new-direct-christchurch-to-rarotonga-flight-takes-off/'),
+            ('NTT DATA opened a Sydney enterprise-AI innovation centre.', 'NTT DATA opened an Innovation Centre in Sydney where Australian and New Zealand organisations can build, test and scale enterprise AI systems with specialist teams and infrastructure.', '25 Aug 2026', 'https://international.austrade.gov.au/en/news-and-analysis/news/new-innovation-centre-to-accelerate-enterprise-scale-ai-deployment-'),
+            ('CommBank is replacing its rewards programme from October.', 'CommBank’s reworked Yello programme starts 1 October with Yello Points and new partner redemptions including Velocity Frequent Flyer; eligible customers began receiving notices from 18 August.', '18 Aug 2026', 'https://www.commbank.com.au/articles/newsroom/2026/08/commbank-yello-reimagined.html'),
+            ('Jetstar launched direct Brisbane–Queenstown flights.', 'Jetstar began direct Brisbane–Queenstown service on 15 June, adding another non-stop airline option between Queensland and Queenstown.', '15 Jun 2026', 'https://www.queenstownairport.co.nz/corporate/news-media/media-releases/jetstars-first-flight-from-brisbane/'),
+            ('New Zealand changed the regulatory test for major fibre expansion.', 'The Commerce Commission confirmed an updated major-capex framework for regulated fibre networks, including a streamlined process for significant new investment and updated treatment of connection costs and insurance.', '25 Aug 2026', 'https://www.comcom.govt.nz/news-and-media/news-and-events/2026/commission-confirms-updates-to-fibre-rules-to-support-future-investment/'),
+            ('CommBank launched a new payout platform.', 'CommBank launched PaidIt for corporate and institutional customers, combining recipient verification, communications and payments using services including the New Payments Platform, PayID and ConnectID.', 'Aug 2026', 'https://www.commbank.com.au/articles/newsroom/2026/08/CBA-launches-PaidIt-to-help-organisations-simplify-payouts.html'),
+            ('New Zealand announced a 2–4% council-rates cap framework.', 'The Government announced legislation for an initial 2–4% annual council-rates target range from 1 July 2027, with full caps planned from 1 July 2029; water charges are excluded from the proposed cap.', '25 Aug 2026', 'https://www.beehive.govt.nz/release/government-cap-rates'),
+          ]
+
+          li = []
+          for h, d, date, source in items:
+              news = h + ' ' + d
+              shown = news if len(news) <= 1800 else news[:1800] + '...'
+              prompt = f'I read the following article: "{shown}". I have a question: '
+              intent = 'intent://chatgpt.com/new?q=' + quote(prompt, safe='') + '#Intent;scheme=https;package=app.vanadium.browser;end'
+              li.append(f'<li><strong>{h}</strong> {d} <em>{date}.</em> <a href="{source}">Source</a> · <a href="{intent}">Follow up</a></li>')
+
+          item = '\n\t\t<item>\n' \
+                 f'\t\t\t<guid isPermaLink="false">{guid}</guid>\n' \
+                 f'\t\t\t<title>{headline}</title>\n' \
+                 f'\t\t\t<description><![CDATA[{desc}]]></description>\n' \
+                 f'\t\t\t<content:encoded><![CDATA[<p>{intro}</p><ol>\n' + '\n'.join(li) + \
+                 '\n</ol>]]></content:encoded>\n' \
+                 '\t\t\t<dc:creator><![CDATA[ChatGPT]]></dc:creator>\n' \
+                 f'\t\t\t<pubDate>{pub}</pubDate>\n' \
+                 '\t\t</item>\n'
+
+          src, n = re.subn(r'(\t\t<description>Personalised news briefings generated by ChatGPT\.</description>\n\t\t<pubDate>)[^<]+(</pubDate>)', rf'\g<1>{pub}\g<2>', src, count=1)
+          assert n == 1
+          marker = '\t\t<generator>ChatGPT</generator>\n'
+          assert src.count(marker) == 1
+          updated = src.replace(marker, marker + item, 1)
+
+          assert updated.count(guid) == 1
+          assert updated.count('<atom:link href="https://pubsubhubbub.appspot.com/" rel="hub" />') == 1
+          assert '<link>https://abnormal032.github.io/personalised-gpt-news/feed.xml</link>' in updated
+          assert '<atom:link href="https://abnormal032.github.io/personalised-gpt-news/feed.xml" rel="self" type="application/rss+xml" />' in updated
+          new_items = re.findall(r'\n\t\t<item>.*?\n\t\t</item>', updated, flags=re.S)
+          assert len(new_items) == len(old_items) + 1
+          assert new_items[1:] == old_items
+          assert re.findall(r'<guid isPermaLink="false">([^<]+)</guid>', updated)[1:] == old_guids
+          assert updated.splitlines()[0] == expected1 and updated.splitlines()[1] == expected2
+          assert not any(re.search(r'<item>.*?<link>', x, flags=re.S) for x in new_items)
+          assert new_items[0].count('>Follow up</a>') == len(items)
+          assert new_items[0].count('intent://chatgpt.com/new?q=') == len(items)
+          assert new_items[0].count('#Intent;scheme=https;package=app.vanadium.browser;end') == len(items)
+          ET.fromstring(updated)
+
+          Path('rss.rss').write_text(updated, encoding='utf-8', newline='')
+          Path('feed.xml').write_text(updated, encoding='utf-8', newline='')
+          assert Path('rss.rss').read_bytes() == Path('feed.xml').read_bytes()
+          print('GUID=' + guid)
+          print('PUB=' + pub)
+          print('ITEMS=' + str(len(new_items)))
+          PY
+      - name: Commit publication
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f .github/workflows/news-run-once.yml
+          git add rss.rss feed.xml .github/workflows/news-run-once.yml
+          git commit -m "Publish personalised news briefing"
+          git push origin HEAD:main
