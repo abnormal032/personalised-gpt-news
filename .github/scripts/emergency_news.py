@@ -9,6 +9,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime, format_datetime
 from pathlib import Path
@@ -135,6 +136,43 @@ def gdelt(query: str):
             time.sleep(10 * (attempt + 1))
     raise last
 
+def google_news(query: str):
+    urls = [
+        "https://news.google.com/rss?hl=en-NZ&gl=NZ&ceid=NZ:en",
+        "https://news.google.com/rss/search?" + urllib.parse.urlencode({
+            "q": query + " when:2d",
+            "hl": "en-NZ",
+            "gl": "NZ",
+            "ceid": "NZ:en",
+        }),
+    ]
+    articles = []
+    for url in urls:
+        try:
+            raw = get(url, 20)
+            root = ET.fromstring(raw)
+        except Exception as e:
+            print(f"Google News RSS failed: {e}", file=sys.stderr)
+            continue
+        for item in root.findall(".//item"):
+            title = clean_text(item.findtext("title") or "")
+            link = (item.findtext("link") or "").strip()
+            pub = (item.findtext("pubDate") or "").strip()
+            src_el = item.find("source")
+            source = clean_text(src_el.text if src_el is not None and src_el.text else "")
+            if source and title.endswith(" - " + source):
+                title = title[:-(len(source) + 3)].strip()
+            if link and title:
+                articles.append({
+                    "title": title,
+                    "url": link,
+                    "seendate": pub,
+                    "domain": source.lower(),
+                    "source": source or "Google News",
+                    "description": "",
+                })
+    return articles
+
 def clean_text(s: str) -> str:
     s = html.unescape(re.sub(r"<[^>]+>", " ", s or ""))
     s = re.sub(r"\s+", " ", s).strip()
@@ -159,6 +197,13 @@ def meta_description(url: str) -> str:
 
 def seen_dt(a):
     raw = str(a.get("seendate") or "")
+    try:
+        dt = parsedate_to_datetime(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(NZ)
+    except Exception:
+        pass
     for fmt in ("%Y%m%dT%H%M%SZ", "%Y%m%d%H%M%S"):
         try:
             return datetime.strptime(raw, fmt).replace(tzinfo=timezone.utc).astimezone(NZ)
@@ -195,10 +240,9 @@ def candidates(existing: str):
     found = []
     for q in QUERIES:
         try:
-            found.extend(gdelt(q))
+            found.extend(google_news(q))
         except Exception as e:
-            print(f"GDELT query failed: {q}: {e}", file=sys.stderr)
-        time.sleep(0.5)
+            print(f"Google News query failed: {q}: {e}", file=sys.stderr)
 
     uniq = {}
     for a in found:
@@ -211,7 +255,7 @@ def candidates(existing: str):
             continue
         if any(blocked in str(a.get("domain", "")).lower() for blocked in BLOCKED_DOMAINS):
             continue
-        if score(a) < 7:
+        if score(a) < 5:
             continue
         if url in existing:
             continue
@@ -271,9 +315,10 @@ def make_item(selected):
     for a in selected:
         title = clean_text(a.get("title", ""))
         url = str(a.get("url") or "")
-        desc = meta_description(url)
+        source_name = clean_text(a.get("source", "")) or "the linked source"
+        desc = clean_text(a.get("description", ""))
         if not desc:
-            desc = title
+            desc = f"Reported by {source_name}."
         if len(desc) > 360:
             desc = desc[:357].rsplit(" ", 1)[0] + "..."
         d = seen_dt(a)
