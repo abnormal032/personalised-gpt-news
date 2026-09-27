@@ -9,6 +9,7 @@ on:
       - main
     paths:
       - .github/workflows/emergency-news.yml
+      - .github/scripts/emergency_news.py
 
 permissions:
   contents: write
@@ -30,6 +31,8 @@ jobs:
 
       - name: Build emergency update only when needed
         shell: bash
+        env:
+          FORCE_REBUILD: ${{ github.event_name == 'push' && '1' || '0' }}
         run: python3 .github/scripts/emergency_news.py
 
       - name: Commit synchronized feed if changed
