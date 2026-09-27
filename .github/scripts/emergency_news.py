@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import re
 import sys
 import time
@@ -22,21 +23,21 @@ RETENTION = timedelta(hours=48)
 MAX_ITEMS = 12
 
 QUERIES = [
-    '"New Zealand"',
-    'Australia',
-    'technology',
-    'business',
-    'travel',
-    'science',
-    'privacy',
-    '"Microsoft Fabric"',
-    'Wellington',
-    'Melbourne',
-    'bitcoin OR ethereum',
+    '("New Zealand" OR Australia OR Wellington OR Melbourne OR privacy OR "data breach" OR travel OR airline OR technology OR business OR science OR bitcoin OR ethereum OR "Microsoft Fabric")',
 ]
 
+BLOCKED_DOMAINS = (
+    "openpr.com", "einpresswire.com", "prnewswire.com", "globenewswire.com",
+    "marketscreener.com", "menafn.com",
+)
+SPORTS_WORDS = (
+    " afl ", " rugby ", " cricket ", " football ", " soccer ", " tennis ",
+    " grand final ", " odi ", " test match ", " tournament ", " league ",
+    " beat ", " defeats ", " score ", " wickets ", " goals ",
+)
+
 INTEREST = {
-    "new zealand": 5, "nz ": 4, "wellington": 5, "australia": 4, "melbourne": 4,
+    "new zealand": 3, "nz ": 3, "wellington": 4, "australia": 2, "melbourne": 3,
     "privacy": 4, "data breach": 5, "security": 3, "travel": 3, "airline": 3,
     "visa": 5, "tenancy": 5, "rent": 3, "microsoft fabric": 6, "power bi": 4,
     "bitcoin": 3, "ethereum": 3, "crypto": 2, "streaming": 2, "gaming": 2,
@@ -116,14 +117,23 @@ def gdelt(query: str):
     params = urllib.parse.urlencode({
         "query": query,
         "mode": "ArtList",
-        "maxrecords": 80,
+        "maxrecords": 250,
         "format": "json",
         "sort": "HybridRel",
-        "timespan": "1d",
+        "timespan": "2d",
     })
     url = "https://api.gdeltproject.org/api/v2/doc/doc?" + params
-    data = json.loads(get(url, 20).decode("utf-8", "replace"))
-    return data.get("articles", [])
+    last = None
+    for attempt in range(3):
+        try:
+            data = json.loads(get(url, 25).decode("utf-8", "replace"))
+            return data.get("articles", [])
+        except Exception as e:
+            last = e
+            if "429" not in str(e) or attempt == 2:
+                break
+            time.sleep(10 * (attempt + 1))
+    raise last
 
 def clean_text(s: str) -> str:
     s = html.unescape(re.sub(r"<[^>]+>", " ", s or ""))
@@ -195,6 +205,13 @@ def candidates(existing: str):
         url = str(a.get("url") or "")
         title = clean_text(a.get("title", ""))
         if not url.startswith("http") or len(title) < 20:
+            continue
+        padded = " " + title.lower() + " "
+        if any(word in padded for word in SPORTS_WORDS):
+            continue
+        if any(blocked in str(a.get("domain", "")).lower() for blocked in BLOCKED_DOMAINS):
+            continue
+        if score(a) < 7:
             continue
         if url in existing:
             continue
@@ -299,10 +316,18 @@ def main():
 
     # Use the file with more items as the source if a previous partial write exists.
     source = rss if len(split_items(rss)) >= len(split_items(feed)) else feed
-    latest = latest_date(source)
 
-    kept = retained_items(source)
-    base = channel_base(source)
+    # When the workflow file itself is changed, permit a one-off rebuild of an
+    # existing emergency item. Never replace a normal ChatGPT briefing.
+    force_rebuild = os.getenv("FORCE_REBUILD", "0") == "1"
+    source_state = source
+    if force_rebuild and "briefing-emergency-" in source:
+        blocks = [b for b in split_items(source) if "briefing-emergency-" not in b]
+        source_state = rebuild(channel_base(source), blocks)
+
+    latest = latest_date(source_state)
+    kept = retained_items(source_state)
+    base = channel_base(source_state)
 
     if latest and NOW - latest < STALE_AFTER:
         # Still normalize rolling retention and synchronization if necessary.
@@ -315,7 +340,7 @@ def main():
             print("Fresh briefing exists; no emergency item needed.")
         return
 
-    selected = candidates(source)
+    selected = candidates(source_state)
     if len(selected) < 6:
         raise SystemExit(f"Only {len(selected)} usable emergency candidates found; refusing weak publication")
 
