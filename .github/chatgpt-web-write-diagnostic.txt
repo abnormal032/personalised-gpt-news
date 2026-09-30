@@ -1,0 +1,1 @@
+Diagnostic derived from current public documentation: scheduled connected-app actions can pause when an external-data change requires approval.
