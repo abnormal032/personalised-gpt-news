@@ -1,5 +1,5 @@
 name: Publish WebSub update
-# production pipeline v8
+# production pipeline v9
 
 on:
   push:
@@ -76,7 +76,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.ollama/models
-          key: ollama-qwen3-4b-v1
+          key: ollama-qwen2.5-3b-v1
 
       - name: Start local model
         if: steps.mode.outputs.generate == 'true' && steps.selector.outputs.hosted != 'true'
@@ -102,7 +102,7 @@ jobs:
             exit 0
           fi
 
-          if ! ollama pull qwen3:4b; then
+          if ! ollama pull qwen2.5:3b; then
             echo "WARN: model pull failed; generator will use deterministic fallback."
             exit 0
           fi
@@ -111,7 +111,7 @@ jobs:
           import requests
           try:
               payload = {
-                  "model": "qwen3:4b",
+                  "model": "qwen2.5:3b",
                   "prompt": "/no_think\nReply with exactly: OK",
                   "stream": False,
                   "think": False,
