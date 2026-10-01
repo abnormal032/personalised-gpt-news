@@ -21,22 +21,20 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - name: AI credential diagnostic
-        if: github.event_name == 'push' && contains(github.event.head_commit.message, 'Test configured AI credentials')
+      - name: Local model capability diagnostic
+        if: github.event_name == 'push' && contains(github.event.head_commit.message, 'Test local publishing model')
         shell: bash
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
         run: |
-          for name in OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY COPILOT_GITHUB_TOKEN; do
-            if [ -n "${!name}" ]; then
-              echo "$name=PRESENT"
-            else
-              echo "$name=ABSENT"
-            fi
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama serve >/tmp/ollama.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null; then break; fi
+            sleep 2
           done
+          ollama pull qwen3:1.7b
+          result="$(ollama run qwen3:1.7b '/no_think Reply with exactly LOCAL_MODEL_OK and nothing else.')"
+          printf '%s\n' "$result"
+          printf '%s' "$result" | grep -qx 'LOCAL_MODEL_OK'
 
       - name: Check out repository
         uses: actions/checkout@v4
