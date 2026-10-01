@@ -12,7 +12,6 @@ on:
 
 permissions:
   contents: write
-  copilot-requests: write
 
 concurrency:
   group: websub-publish
@@ -22,16 +21,22 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - name: Copilot capability diagnostic
-        if: github.event_name == 'push' && contains(github.event.head_commit.message, 'Test Copilot publishing engine')
+      - name: AI credential diagnostic
+        if: github.event_name == 'push' && contains(github.event.head_commit.message, 'Test configured AI credentials')
         shell: bash
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
         run: |
-          npm install -g @github/copilot
-          result="$(copilot -p 'Reply with exactly COPILOT_OK and nothing else.' -s)"
-          echo "$result"
-          test "$result" = "COPILOT_OK"
+          for name in OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY COPILOT_GITHUB_TOKEN; do
+            if [ -n "${!name}" ]; then
+              echo "$name=PRESENT"
+            else
+              echo "$name=ABSENT"
+            fi
+          done
 
       - name: Check out repository
         uses: actions/checkout@v4
