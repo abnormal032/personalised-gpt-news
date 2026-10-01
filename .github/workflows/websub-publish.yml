@@ -1,5 +1,5 @@
 name: Publish WebSub update
-# production pipeline v6
+# production pipeline v7
 
 on:
   push:
@@ -20,7 +20,7 @@ permissions:
 
 concurrency:
   group: websub-publish
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   publish:
@@ -68,30 +68,49 @@ jobs:
         if: steps.mode.outputs.generate == 'true'
         shell: bash
         run: |
-          curl -fsSL https://ollama.com/install.sh | sh
+          set +e
+          if ! curl -fsSL https://ollama.com/install.sh | sh; then
+            echo "WARN: Ollama install failed; generator will use deterministic fallback."
+            exit 0
+          fi
+
           ollama serve >/tmp/ollama.log 2>&1 &
+          ready=false
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null; then
+              ready=true
               break
             fi
             sleep 2
           done
-          curl -fsS http://127.0.0.1:11434/api/tags >/dev/null
-          ollama pull qwen3:1.7b
+          if [ "$ready" != "true" ]; then
+            echo "WARN: Ollama server did not become ready; generator will use deterministic fallback."
+            exit 0
+          fi
+
+          if ! ollama pull qwen3:1.7b; then
+            echo "WARN: model pull failed; generator will use deterministic fallback."
+            exit 0
+          fi
+
           python3 - <<'PY'
           import requests
-          payload = {
-              "model": "qwen3:1.7b",
-              "prompt": "/no_think\nReply with exactly: OK",
-              "stream": False,
-              "think": False,
-              "keep_alive": "10m",
-              "options": {"num_ctx": 1024, "num_predict": 8},
-          }
-          r = requests.post("http://127.0.0.1:11434/api/generate", json=payload, timeout=120)
-          r.raise_for_status()
-          print("Local model warm-up complete.")
+          try:
+              payload = {
+                  "model": "qwen3:1.7b",
+                  "prompt": "/no_think\nReply with exactly: OK",
+                  "stream": False,
+                  "think": False,
+                  "keep_alive": "10m",
+                  "options": {"num_ctx": 1024, "num_predict": 8},
+              }
+              r = requests.post("http://127.0.0.1:11434/api/generate", json=payload, timeout=120)
+              r.raise_for_status()
+              print("Local model warm-up complete.")
+          except Exception as e:
+              print(f"WARN: local model warm-up failed: {e}")
           PY
+          exit 0
 
       - name: Install news dependencies
         if: steps.mode.outputs.generate == 'true'
