@@ -1,5 +1,5 @@
 name: Publish WebSub update
-# production pipeline v7
+# production pipeline v8
 
 on:
   push:
@@ -13,7 +13,6 @@ on:
   schedule:
     - cron: '0 8 * * *'
     - cron: '0 9 * * *'
-    - cron: '0 10 * * *'
 
 permissions:
   contents: write
@@ -62,7 +61,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.ollama/models
-          key: ollama-qwen3-1.7b-v1
+          key: ollama-qwen3-4b-v1
 
       - name: Start local model
         if: steps.mode.outputs.generate == 'true'
@@ -88,7 +87,7 @@ jobs:
             exit 0
           fi
 
-          if ! ollama pull qwen3:1.7b; then
+          if ! ollama pull qwen3:4b; then
             echo "WARN: model pull failed; generator will use deterministic fallback."
             exit 0
           fi
@@ -97,7 +96,7 @@ jobs:
           import requests
           try:
               payload = {
-                  "model": "qwen3:1.7b",
+                  "model": "qwen3:4b",
                   "prompt": "/no_think\nReply with exactly: OK",
                   "stream": False,
                   "think": False,
