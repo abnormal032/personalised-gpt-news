@@ -31,7 +31,7 @@ CANONICAL = "https://abnormal032.github.io/personalised-gpt-news/feed.xml"
 HUB = "https://pubsubhubbub.appspot.com/"
 RETENTION = timedelta(hours=48)
 RECENT = timedelta(hours=4)
-MODEL = os.getenv("NEWS_MODEL", "qwen3:4b")
+MODEL = os.getenv("NEWS_MODEL", "qwen2.5:3b")
 OLLAMA = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_NEWS_MODEL", "gpt-5.6-luna").strip()
