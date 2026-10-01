@@ -312,28 +312,34 @@ def ollama_json(prompt: str, timeout: int = 240) -> dict[str, Any]:
             "num_predict": 420,
         },
     }
-    last_error = None
+    raw = ""
     for attempt in range(2):
         try:
             r = requests.post(OLLAMA, json=payload, timeout=timeout)
             r.raise_for_status()
             raw = str(r.json().get("response", "")).strip()
             break
-        except requests.exceptions.ReadTimeout as e:
-            last_error = e
+        except requests.RequestException as e:
+            print(f"WARN local model request attempt {attempt + 1} failed: {e}", file=sys.stderr)
             if attempt == 0:
                 payload["options"]["num_predict"] = 300
                 continue
-            raise RuntimeError(f"Local model timed out after {timeout}s on both attempts") from e
-    else:
-        raise last_error or RuntimeError("Local model request failed")
+            return {}
+
     try:
         return json.loads(raw)
-    except Exception:
-        m = re.search(r"\{.*\}", raw, re.S)
-        if not m:
-            raise RuntimeError("Model returned non-JSON output")
-        return json.loads(m.group(0))
+    except Exception as e:
+        # Qwen occasionally truncates or slightly malforms JSON on CPU runners.
+        # Candidate IDs are fixed 12-char SHA fragments, so safely salvage them.
+        ids: list[str] = []
+        seen: set[str] = set()
+        for cid in re.findall(r"(?<![0-9a-f])[0-9a-f]{12}(?![0-9a-f])", raw, re.I):
+            cid = cid.lower()
+            if cid not in seen:
+                ids.append(cid)
+                seen.add(cid)
+        print(f"WARN local model JSON invalid ({e}); salvaged {len(ids)} candidate IDs", file=sys.stderr)
+        return {"ids": ids[:18]}
 
 def build_model_prompt(candidates: list[Candidate], delivered: str) -> str:
     rows = []
