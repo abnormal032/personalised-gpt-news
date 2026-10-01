@@ -56,15 +56,30 @@ jobs:
           echo "force=$force" >> "$GITHUB_OUTPUT"
           echo "generate=$generate force=$force local_hour=$(TZ=Pacific/Auckland date +%H)"
 
-      - name: Restore local model cache
+      - name: Detect hosted selector
+        id: selector
         if: steps.mode.outputs.generate == 'true'
+        shell: bash
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -n "$OPENAI_API_KEY" ]; then
+            echo "hosted=true" >> "$GITHUB_OUTPUT"
+            echo "Using hosted OpenAI selector."
+          else
+            echo "hosted=false" >> "$GITHUB_OUTPUT"
+            echo "OPENAI_API_KEY absent; using local selector fallback."
+          fi
+
+      - name: Restore local model cache
+        if: steps.mode.outputs.generate == 'true' && steps.selector.outputs.hosted != 'true'
         uses: actions/cache@v4
         with:
           path: ~/.ollama/models
           key: ollama-qwen3-4b-v1
 
       - name: Start local model
-        if: steps.mode.outputs.generate == 'true'
+        if: steps.mode.outputs.generate == 'true' && steps.selector.outputs.hosted != 'true'
         shell: bash
         run: |
           set +e
@@ -121,6 +136,9 @@ jobs:
         id: generate
         if: steps.mode.outputs.generate == 'true'
         shell: bash
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_NEWS_MODEL: gpt-5.6-luna
         run: |
           args=()
           if [ "${{ steps.mode.outputs.force }}" = "true" ]; then
