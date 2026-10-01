@@ -69,6 +69,16 @@ EXPLICIT_QUERIES = {
     "entertainment": '(AAA game release OR blockbuster movie release) available now when:3d',
 }
 
+PRACTICAL_QUERIES = {
+    "nz-practical": '(New Zealand OR Wellington OR Auckland) (law OR rule OR price OR fee OR rent OR mortgage OR transport OR banking OR jobs OR travel OR closure OR launch) when:2d',
+    "australia-broad": '(Australia OR Melbourne) (law OR rule OR price OR fee OR rent OR housing OR jobs OR transport OR banking OR travel OR closure OR launch) when:2d',
+    "consumer-tech": '(Microsoft OR Google OR Android OR Windows OR Steam OR PlayStation OR Xbox OR Netflix OR Amazon OR WhatsApp OR Signal OR Firefox OR Chrome) (launches OR releases OR price OR fee OR subscription OR availability OR shutdown OR recall OR security update) when:2d',
+    "privacy-security-broad": '(privacy OR data breach OR tracking OR surveillance OR encryption OR passkey) (Google OR Microsoft OR Meta OR WhatsApp OR Android OR browser OR bank OR airline) when:2d',
+    "travel-practical-broad": '(New Zealand travel OR Australia travel OR airline) (visa OR entry rule OR airport closure OR flight disruption OR new route OR cancellation) when:3d',
+    "consumer-finance-broad": '(New Zealand OR Australia) (mortgage OR interest rate OR bank fee OR payment OR credit card OR insurance OR tax) when:2d',
+}
+
+
 BLOCK_PATTERNS = [
     r"\b(opinion|editorial|commentary|letters? to the editor|horoscope|quiz|podcast)\b",
     r"\b(rugby|cricket|football|soccer|tennis|afl|nrl|nba|nfl|mlb|nhl|fifa|grand final|world cup qualifier)\b",
@@ -151,6 +161,12 @@ def collect_candidates() -> list[Candidate]:
         except Exception as e:
             print(f"WARN broad feed {origin}: {e}", file=sys.stderr)
         time.sleep(0.2)
+    for name, query in PRACTICAL_QUERIES.items():
+        try:
+            all_rows.extend(parse_feed(google_search_url(query), f"practical:{name}", None, 50))
+        except Exception as e:
+            print(f"WARN practical feed {name}: {e}", file=sys.stderr)
+        time.sleep(0.25)
     for topic, query in EXPLICIT_QUERIES.items():
         try:
             all_rows.extend(parse_feed(google_search_url(query), f"explicit:{topic}", topic, 50))
@@ -168,7 +184,8 @@ def collect_candidates() -> list[Candidate]:
             seen[n] = c
 
     rows = list(seen.values())
-    broad = [x for x in rows if x.explicit_topic is None]
+    practical = [x for x in rows if x.explicit_topic is None and x.origin.startswith("practical:")]
+    broad = [x for x in rows if x.explicit_topic is None and not x.origin.startswith("practical:")]
     explicit = [x for x in rows if x.explicit_topic is not None]
 
     def diversify(items: list[Candidate], max_total: int, max_per_source: int = 4) -> list[Candidate]:
@@ -184,7 +201,8 @@ def collect_candidates() -> list[Candidate]:
                 break
         return out
 
-    broad = diversify(broad, 45, 3)
+    broad = diversify(broad, 30, 3)
+    practical = diversify(practical, 30, 4)
     by_topic: dict[str, list[Candidate]] = {}
     for c in explicit:
         by_topic.setdefault(c.explicit_topic or "", []).append(c)
@@ -198,8 +216,8 @@ def collect_candidates() -> list[Candidate]:
             if rank < len(rows_for_topic):
                 explicit_out.append(rows_for_topic[rank])
     explicit_out = explicit_out[:30]
-    combined = broad + explicit_out
-    print(f"Collected {len(rows)} unique candidates; sending {len(combined)} to enrichment")
+    combined = broad + practical + explicit_out
+    print(f"Collected {len(rows)} unique candidates; broad={len(broad)} practical={len(practical)} explicit={len(explicit_out)}; sending {len(combined)} to enrichment")
     return combined
 
 def decode_google_urls(candidates: list[Candidate]) -> None:
@@ -779,7 +797,7 @@ def run(force: bool = False) -> int:
                 model_candidates.append(broad_eligible[bi]); bi += 1
         if ei < len(explicit_eligible) and len(model_candidates) < 60:
             model_candidates.append(explicit_eligible[ei]); ei += 1
-    print(f"Hard relevance gate kept {len(eligible)} candidates; {len(model_candidates)} sent to selector")
+    print(f"Hard relevance gate kept {len(eligible)} candidates (broad={len(broad_eligible)}, explicit={len(explicit_eligible)}); {len(model_candidates)} sent to selector")
     if len(model_candidates) < 18:
         raise RuntimeError(f"Hard relevance gate left only {len(model_candidates)} candidates; refusing weak publication")
 
