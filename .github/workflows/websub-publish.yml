@@ -1,5 +1,4 @@
 name: Publish WebSub update
-# Editing this workflow is also a safe manual trigger for a WebSub publish test.
 
 on:
   push:
@@ -8,7 +7,12 @@ on:
     paths:
       - feed.xml
       - .github/workflows/websub-publish.yml
+      - .github/scripts/generate_personalised_news.py
   workflow_dispatch:
+  schedule:
+    - cron: '0 8 * * *'
+    - cron: '0 9 * * *'
+    - cron: '0 10 * * *'
 
 permissions:
   contents: write
@@ -20,28 +24,87 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    steps:
-      - name: Local model capability diagnostic
-        if: github.event_name == 'push' && contains(github.event.head_commit.message, 'Test local publishing model')
-        shell: bash
-        run: |
-          curl -fsSL https://ollama.com/install.sh | sh
-          ollama serve >/tmp/ollama.log 2>&1 &
-          for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null; then break; fi
-            sleep 2
-          done
-          ollama pull qwen3:1.7b
-          result="$(ollama run qwen3:1.7b '/no_think Reply with exactly LOCAL_MODEL_OK and nothing else.')"
-          printf '%s\n' "$result"
-          printf '%s' "$result" | grep -qx 'LOCAL_MODEL_OK'
+    timeout-minutes: 30
 
+    steps:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Ensure WebSub hub is advertised
+      - name: Decide whether to generate news
+        id: mode
+        shell: bash
+        run: |
+          generate=false
+          force=false
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            generate=true
+            force=true
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            local_hour="$(TZ=Pacific/Auckland date +%H)"
+            if [ "$local_hour" = "21" ] || [ "$local_hour" = "22" ]; then
+              generate=true
+            fi
+          elif [ "${{ github.event_name }}" = "push" ] && printf '%s' "${{ github.event.head_commit.message }}" | grep -q "Deploy and test production news pipeline"; then
+            generate=true
+            force=true
+          fi
+
+          echo "generate=$generate" >> "$GITHUB_OUTPUT"
+          echo "force=$force" >> "$GITHUB_OUTPUT"
+          echo "generate=$generate force=$force local_hour=$(TZ=Pacific/Auckland date +%H)"
+
+      - name: Restore local model cache
+        if: steps.mode.outputs.generate == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.ollama/models
+          key: ollama-qwen3-1.7b-v1
+
+      - name: Start local model
+        if: steps.mode.outputs.generate == 'true'
+        shell: bash
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama serve >/tmp/ollama.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:11434/api/tags >/dev/null
+          ollama pull qwen3:1.7b
+
+      - name: Install news dependencies
+        if: steps.mode.outputs.generate == 'true'
+        shell: bash
+        run: |
+          python3 -m pip install --disable-pip-version-check --quiet             feedparser beautifulsoup4 requests googlenewsdecoder==0.2.1
+
+      - name: Generate personalised news when required
+        id: generate
+        if: steps.mode.outputs.generate == 'true'
+        shell: bash
+        run: |
+          args=()
+          if [ "${{ steps.mode.outputs.force }}" = "true" ]; then
+            args+=(--force)
+          fi
+          python3 .github/scripts/generate_personalised_news.py "${args[@]}"
+          if [ -f /tmp/news-generation-report.json ]; then
+            cat /tmp/news-generation-report.json
+            {
+              echo '### News generation report'
+              echo '```json'
+              cat /tmp/news-generation-report.json
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Ensure WebSub metadata and file synchronization
         shell: bash
         run: |
           python3 - <<'PY'
@@ -66,18 +129,61 @@ jobs:
           feed_path.write_text(rss, encoding="utf-8")
           PY
 
-      - name: Commit WebSub metadata if needed
+      - name: Validate synchronized RSS before commit
         shell: bash
         run: |
-          if ! git diff --quiet -- rss.rss feed.xml; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add rss.rss feed.xml
-            git commit -m "Keep WebSub metadata in RSS"
-            git push
+          cmp --silent rss.rss feed.xml
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          text = Path("feed.xml").read_text(encoding="utf-8")
+          required = [
+              '<?xml version="1.0" encoding="UTF-8"?>',
+              '<atom:link href="https://abnormal032.github.io/personalised-gpt-news/feed.xml" rel="self" type="application/rss+xml" />',
+              '<atom:link href="https://pubsubhubbub.appspot.com/" rel="hub" />',
+          ]
+          for value in required:
+              if value not in text:
+                  raise SystemExit(f"Missing required RSS metadata: {value}")
+          for item in re.findall(r"<item>.*?</item>", text, re.S):
+              if re.search(r"<link>", item):
+                  raise SystemExit("Item-level <link> detected")
+              if "<content:encoded><![CDATA[" not in item:
+                  raise SystemExit("Missing content:encoded")
+          PY
+
+      - name: Commit feed changes if needed
+        id: commit
+        shell: bash
+        run: |
+          if git diff --quiet -- rss.rss feed.xml; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No feed commit required."
+            exit 0
           fi
 
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add rss.rss feed.xml
+          git commit -m "Publish personalised news"
+          git pull --rebase origin main
+          git push origin HEAD:main
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Decide whether WebSub publication is required
+        id: websub
+        shell: bash
+        run: |
+          publish=false
+          if [ "${{ steps.commit.outputs.changed }}" = "true" ]; then
+            publish=true
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            publish=true
+          fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+
       - name: Wait until GitHub Pages serves the current feed
+        if: steps.websub.outputs.publish == 'true'
         shell: bash
         env:
           TOPIC_URL: https://abnormal032.github.io/personalised-gpt-news/feed.xml
@@ -86,9 +192,7 @@ jobs:
           ready=false
 
           for attempt in $(seq 1 36); do
-            if curl --fail --silent --show-error --location \
-              "${TOPIC_URL}?websub_check=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${attempt}" \
-              --output /tmp/public-feed.xml; then
+            if curl --fail --silent --show-error --location               "${TOPIC_URL}?websub_check=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${attempt}"               --output /tmp/public-feed.xml; then
               actual="$(sha256sum /tmp/public-feed.xml | awk '{print $1}')"
               if [ "$actual" = "$expected" ]; then
                 ready=true
@@ -104,14 +208,20 @@ jobs:
           fi
 
       - name: Notify WebSub hub
+        if: steps.websub.outputs.publish == 'true'
         shell: bash
         env:
           TOPIC_URL: https://abnormal032.github.io/personalised-gpt-news/feed.xml
           HUB_URL: https://pubsubhubbub.appspot.com/
         run: |
-          curl --fail --silent --show-error \
-            --retry 3 --retry-all-errors \
-            --header "Content-Type: application/x-www-form-urlencoded" \
-            --data-urlencode "hub.mode=publish" \
-            --data-urlencode "hub.url=${TOPIC_URL}" \
-            "${HUB_URL}"
+          curl --fail --silent --show-error             --retry 3 --retry-all-errors             --header "Content-Type: application/x-www-form-urlencoded"             --data-urlencode "hub.mode=publish"             --data-urlencode "hub.url=${TOPIC_URL}"             "${HUB_URL}"
+
+      - name: Final public-feed verification
+        if: steps.websub.outputs.publish == 'true'
+        shell: bash
+        env:
+          TOPIC_URL: https://abnormal032.github.io/personalised-gpt-news/feed.xml
+        run: |
+          curl --fail --silent --show-error --location             "${TOPIC_URL}?final_check=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"             --output /tmp/final-public-feed.xml
+          cmp --silent feed.xml /tmp/final-public-feed.xml
+          echo "Repository feed, public Pages feed, and WebSub publication all verified."
