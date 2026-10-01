@@ -1,5 +1,5 @@
 name: Publish WebSub update
-# production pipeline v10
+# production pipeline v11
 
 on:
   push:
@@ -11,8 +11,10 @@ on:
       - .github/scripts/generate_personalised_news.py
   workflow_dispatch:
   schedule:
-    - cron: '0 8 * * *'
-    - cron: '0 9 * * *'
+    - cron: '11 21 * * *'
+      timezone: "Pacific/Auckland"
+    - cron: '11 22 * * *'
+      timezone: "Pacific/Auckland"
 
 permissions:
   contents: write
@@ -43,10 +45,7 @@ jobs:
             generate=true
             force=true
           elif [ "${{ github.event_name }}" = "schedule" ]; then
-            local_hour="$(TZ=Pacific/Auckland date +%H)"
-            if [ "$local_hour" = "21" ] || [ "$local_hour" = "22" ]; then
-              generate=true
-            fi
+            generate=true
           elif [ "${{ github.event_name }}" = "push" ] && printf '%s' "${{ github.event.head_commit.message }}" | grep -q "Deploy and test production news pipeline"; then
             generate=true
             force=true
@@ -54,13 +53,38 @@ jobs:
 
           echo "generate=$generate" >> "$GITHUB_OUTPUT"
           echo "force=$force" >> "$GITHUB_OUTPUT"
-          echo "generate=$generate force=$force local_hour=$(TZ=Pacific/Auckland date +%H)"
+          echo "generate=$generate force=$force event=${{ github.event_name }} schedule=${{ github.event.schedule || '' }} local_time=$(TZ=Pacific/Auckland date '+%Y-%m-%dT%H:%M:%S%z')"
 
       - name: Install news dependencies
         if: steps.mode.outputs.generate == 'true'
         shell: bash
         run: |
           python3 -m pip install --disable-pip-version-check --quiet             feedparser beautifulsoup4 requests googlenewsdecoder==0.2.1
+
+      - name: Restore local selector cache
+        if: steps.mode.outputs.generate == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.ollama/models
+          key: ollama-qwen25-15b-v1
+
+      - name: Start local selector
+        if: steps.mode.outputs.generate == 'true'
+        shell: bash
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama serve >/tmp/ollama.log 2>&1 &
+          for i in $(seq 1 45); do
+            if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:11434/api/tags >/dev/null
+          ollama pull qwen2.5:1.5b
+          curl --fail --silent --show-error --max-time 120             http://127.0.0.1:11434/api/generate             -H 'Content-Type: application/json'             -d '{"model":"qwen2.5:1.5b","prompt":"Reply with OK","stream":false,"keep_alive":"10m","options":{"num_ctx":1024,"num_predict":8}}'             >/tmp/ollama-warmup.json
+          echo "Local selector ready."
+
 
       - name: Generate personalised news when required
         id: generate
@@ -69,6 +93,7 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_NEWS_MODEL: gpt-5.6-terra
+          NEWS_MODEL: qwen2.5:1.5b
         run: |
           args=()
           if [ "${{ steps.mode.outputs.force }}" = "true" ]; then
