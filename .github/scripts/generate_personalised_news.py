@@ -513,10 +513,6 @@ def run(force: bool = False) -> int:
 
     prompt = build_model_prompt(enriched, existing_story_text(source))
     headline, intro, selected = validate_selection(ollama_json(prompt), enriched)
-    if len(selected) < 18:
-        correction = prompt + f"\nPrevious attempt yielded only {len(selected)} valid items after hard-cap validation. Re-evaluate all candidates and return 18-25 only if clearly qualified; prefer broader non-digital practical developments instead of padding."
-        h2, i2, s2 = validate_selection(ollama_json(correction), enriched)
-        if len(s2) > len(selected): headline, intro, selected = h2, i2, s2
     if len(selected) < 18: raise RuntimeError(f"Model produced only {len(selected)} qualifying items; refusing to publish below 18")
 
     guid, item = create_item(headline, intro, selected, at)
