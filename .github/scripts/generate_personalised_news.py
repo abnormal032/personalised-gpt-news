@@ -391,8 +391,18 @@ def ollama_json(prompt: str, allowed_ids: list[str], timeout: int = 300) -> dict
                 if cid in allowed and cid not in seen:
                     ids.append(cid)
                     seen.add(cid)
+            if len(ids) < 18:
+                # All allowed IDs already passed the hard relevance gate. If the
+                # small local model duplicates an ID, fill only from that
+                # pre-qualified pool instead of failing publication.
+                for cid in allowed_ids:
+                    if cid not in seen:
+                        ids.append(cid)
+                        seen.add(cid)
+                    if len(ids) >= 18:
+                        break
             if len(ids) >= 18:
-                print(f"Local structured selector returned {len(ids)} valid candidate IDs")
+                print(f"Local structured selector returned/filled {len(ids)} valid candidate IDs")
                 return {"ids": ids[:18]}
             print(f"WARN local structured selector returned only {len(ids)} valid IDs: {raw[:300]}", file=sys.stderr)
         except (requests.RequestException, ValueError) as e:
@@ -775,7 +785,11 @@ def run(force: bool = False) -> int:
 
     prompt = build_model_prompt(model_candidates, existing_story_text(source))
     selection: dict[str, Any] = {}
-    if OPENAI_API_KEY:
+    if len(model_candidates) == 18:
+        # Nothing to rank: every remaining candidate passed all hard gates.
+        selection = {"ids": [c.cid for c in model_candidates]}
+        print("Hard relevance gate produced exactly 18 candidates; selector ranking bypassed.")
+    elif OPENAI_API_KEY:
         try:
             selection = openai_selection(prompt)
         except Exception as e:
