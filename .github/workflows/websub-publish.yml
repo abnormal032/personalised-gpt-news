@@ -1,5 +1,5 @@
 name: Publish WebSub update
-# production pipeline v11
+# production pipeline v12
 
 on:
   push:
@@ -66,7 +66,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.ollama/models
-          key: ollama-qwen25-15b-v1
+          key: ollama-qwen25-3b-v1
 
       - name: Start local selector
         if: steps.mode.outputs.generate == 'true'
@@ -81,8 +81,8 @@ jobs:
             sleep 2
           done
           curl -fsS http://127.0.0.1:11434/api/tags >/dev/null
-          ollama pull qwen2.5:1.5b
-          curl --fail --silent --show-error --max-time 120             http://127.0.0.1:11434/api/generate             -H 'Content-Type: application/json'             -d '{"model":"qwen2.5:1.5b","prompt":"Reply with OK","stream":false,"keep_alive":"10m","options":{"num_ctx":1024,"num_predict":8}}'             >/tmp/ollama-warmup.json
+          ollama pull qwen2.5:3b
+          curl --fail --silent --show-error --max-time 120             http://127.0.0.1:11434/api/generate             -H 'Content-Type: application/json'             -d '{"model":"qwen2.5:3b","prompt":"Reply with OK","stream":false,"keep_alive":"10m","options":{"num_ctx":1024,"num_predict":8}}'             >/tmp/ollama-warmup.json
           echo "Local selector ready."
 
 
@@ -93,7 +93,7 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_NEWS_MODEL: gpt-5.6-terra
-          NEWS_MODEL: qwen2.5:1.5b
+          NEWS_MODEL: qwen2.5:3b
         run: |
           args=()
           if [ "${{ steps.mode.outputs.force }}" = "true" ]; then

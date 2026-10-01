@@ -184,14 +184,20 @@ def collect_candidates() -> list[Candidate]:
                 break
         return out
 
-    broad = diversify(broad, 30, 3)
+    broad = diversify(broad, 45, 3)
     by_topic: dict[str, list[Candidate]] = {}
     for c in explicit:
         by_topic.setdefault(c.explicit_topic or "", []).append(c)
     explicit_out: list[Candidate] = []
-    for topic in EXPLICIT_QUERIES:
-        explicit_out.extend(by_topic.get(topic, [])[:3])
-    explicit_out = explicit_out[:18]
+    # Round-robin so every explicit topic gets a chance before any topic gets
+    # a second/third slot. The old append-then-slice logic silently excluded
+    # later topics such as travel, tenancy, SCV 444 and Melbourne Fabric.
+    for rank in range(3):
+        for topic in EXPLICIT_QUERIES:
+            rows_for_topic = by_topic.get(topic, [])
+            if rank < len(rows_for_topic):
+                explicit_out.append(rows_for_topic[rank])
+    explicit_out = explicit_out[:30]
     combined = broad + explicit_out
     print(f"Collected {len(rows)} unique candidates; sending {len(combined)} to enrichment")
     return combined
@@ -252,7 +258,15 @@ def extract_article_context(c: Candidate) -> Candidate:
                     bits.append(text)
                 if sum(len(x) for x in bits) > 900:
                     break
-        c.snippet = html.unescape(" ".join(" ".join(bits).split())[:950])
+        unique_bits: list[str] = []
+        seen_bits: set[str] = set()
+        for bit in bits:
+            clean = " ".join(html.unescape(bit).split())
+            key = clean.lower()
+            if len(clean) >= 25 and key not in seen_bits:
+                unique_bits.append(clean)
+                seen_bits.add(key)
+        c.snippet = " ".join(unique_bits)[:950]
     except Exception:
         pass
     return c
@@ -387,7 +401,7 @@ def ollama_json(prompt: str, allowed_ids: list[str], timeout: int = 300) -> dict
 
 def build_model_prompt(candidates: list[Candidate], delivered: str) -> str:
     rows = []
-    for c in candidates[:40]:
+    for c in candidates:
         rows.append({
             "id": c.cid,
             "title": c.title,
@@ -430,24 +444,71 @@ Candidates:
 
 def _hard_reject(c: Candidate) -> bool:
     t = f" {c.title} {c.snippet} ".lower()
+    title = c.title.lower()
     topic = c.explicit_topic
 
+    # Noise and non-factual formats are never useful enough for this feed.
+    if any(x in t for x in (
+        "opinion", "editorial", "commentary", "market talk", "roundup",
+        "interview with", "letters to the editor", "photo gallery", "photos:",
+        "what i learned", "what a ", "look back", "podcast",
+    )):
+        return True
+    if re.search(r"\b(could|would|might)\b", title) and topic is None:
+        return True
+
+    # Explicit topics still have topic-specific hard gates.
     if topic == "war-fundamental":
-        return not any(x in t for x in ("ceasefire", "peace deal", "peace agreement", "settlement", "war ends", "war ended", "end of the war"))
+        return not any(x in t for x in (
+            "ceasefire", "peace deal", "peace agreement", "settlement",
+            "war ends", "war ended", "end of the war"
+        ))
+    if topic in ("btc-move", "eth-move"):
+        return re.search(r"\b(?:3\d|[4-9]\d|1\d\d)\s*%", t) is None
+    if topic == "vix":
+        return "vix" not in t or re.search(r"\b(?:4\d|[5-9]\d|1\d\d)(?:\.\d+)?\b", t) is None
+    if topic == "entertainment":
+        return not (
+            any(x in t for x in ("released", "release", "launch", "available now"))
+            and any(x in t for x in ("aaa", "blockbuster", "playstation", "xbox", "steam"))
+        )
+    if topic == "crypto-finance":
+        if any(x in t for x in ("market talk", "daily report", "roundup", "interview", "outlook")):
+            return True
+        return not any(x in t for x in (
+            "bitcoin", "ethereum", "crypto", "mortgage", "interest rate", "bank fee",
+            "payment", "credit card", "deposit rate", "tax", "insurance", "kiwisaver"
+        ))
+    if topic == "australia-practical":
+        return "australia" not in t or not any(x in t for x in (
+            "law", "rule", "fee", "price", "rent", "housing", "job", "wage",
+            "transport", "visa", "residence", "tax", "bank", "insurance"
+        ))
+    if topic == "privacy":
+        return not (
+            any(x in t for x in ("privacy", "data collection", "surveillance", "data breach", "tracking"))
+            and any(x in t for x in ("new", "change", "launch", "law", "rule", "update", "breach", "ban", "ends"))
+        )
+    if topic == "fabric-melbourne":
+        return "melbourne" not in t or "microsoft fabric" not in t
+    if topic == "australia-444":
+        return not any(x in t for x in ("special category visa", "subclass 444", "new zealand citizens"))
+    if topic == "nz-tenancy":
+        return not any(x in t for x in ("tenancy", "residential tenancies", "renters", "landlord"))
     if topic:
         return False
 
+    # Broad discovery must have a concrete practical path to the NZ reader.
     if any(x in t for x in (
-        "princess ", " prince ", "royal family", "celebrity", "red carpet", "state dinner",
-        "pope ", "football", "soccer", "rugby", "cricket", "tennis", "afl ", "nrl ",
+        "princess ", " prince ", "royal family", "celebrity", "red carpet",
+        "funeral", "obituary", "human interest", "was crowned king",
     )):
         return True
 
-    # Routine foreign violence/conflict is not practical news for this reader.
     conflict = any(x in t for x in (
         "ukraine", "russia", "iran", "gaza", "israel", "afghanistan", "pakistan",
         "tigray", "nato", "missile", "air strike", "airstrike", "drone attack",
-        "fighters killed", "civilians killed"
+        "nuclear threat", "fighters killed", "civilians killed", "explosions heard"
     ))
     fundamental = any(x in t for x in (
         "ceasefire", "peace deal", "peace agreement", "settlement", "war ends", "war ended"
@@ -455,13 +516,44 @@ def _hard_reject(c: Candidate) -> bool:
     if conflict and not fundamental:
         return True
 
-    # Generic isolated foreign crime/accidents are excluded.
     if any(x in t for x in (
-        "stabbing", "shooting", "strikes 4 people", "car crash", "murder", "arson at",
+        "election", "candidate", "polling", "campaign", "lawmakers", "prime minister",
+        "president", "migrant agreement", "migrants transferred", "school protests",
+        "student protests", "diplomatic", "retaliation", "sanctions threat"
     )) and not any(x in t for x in ("new zealand", "australia", "wellington", "melbourne")):
         return True
 
-    return False
+    if any(x in t for x in (
+        "stabbing", "shooting", "home break-in", "break-ins", "car crash", "murder",
+        "arson", "sinks yacht", "rescued alive"
+    )) and not any(x in t for x in ("new zealand law", "australia law", "recall", "rule change")):
+        return True
+
+    geo = any(x in t for x in ("new zealand", "nz ", "wellington", "auckland", "australia", "melbourne"))
+    concrete = any(x in t for x in (
+        "launch", "release", "released", "available", "price", "fee", "cost", "law",
+        "rule", "ban", "recall", "closure", "reopen", "opens", "ends", "shuts down",
+        "interest rate", "mortgage", "rent", "tax", "visa", "entry", "jobs", "wages",
+        "subscription", "ownership", "security update", "data breach"
+    ))
+    global_product = any(x in t for x in (
+        "microsoft", "google", "android", "windows", "chatgpt", "openai", "steam",
+        "playstation", "xbox", "netflix", "amazon", "whatsapp", "meta", "firefox",
+        "chrome", "signal", "spotify", "youtube"
+    ))
+    privacy_security = any(x in t for x in (
+        "privacy", "tracking", "data collection", "data breach", "security update",
+        "password", "passkey", "encryption", "surveillance"
+    ))
+
+    if geo and concrete:
+        return False
+    if global_product and concrete:
+        return False
+    if privacy_security and concrete:
+        return False
+
+    return True
 
 def _candidate_flags(c: Candidate) -> dict[str, bool]:
     text = f"{c.title} {c.snippet} {c.explicit_topic or ''}".lower()
@@ -539,7 +631,7 @@ def validate_selection(data: dict[str, Any], candidates: list[Candidate]) -> tup
             return False
         if flags["ent"] and entertainment >= 1:
             return False
-        if c.explicit_topic and explicit >= 6:
+        if c.explicit_topic and explicit >= 8:
             return False
         if flags["digital"] and digital >= 9:
             return False
@@ -666,7 +758,22 @@ def run(force: bool = False) -> int:
     enriched = enrich_candidates(candidates)
     if len(enriched) < 24: raise RuntimeError(f"Only {len(enriched)} candidates resolved to direct publisher URLs")
 
-    prompt = build_model_prompt(enriched, existing_story_text(source))
+    eligible = [c for c in enriched if not _hard_reject(c)]
+    broad_eligible = [c for c in eligible if c.explicit_topic is None]
+    explicit_eligible = [c for c in eligible if c.explicit_topic is not None]
+    model_candidates: list[Candidate] = []
+    bi = ei = 0
+    while len(model_candidates) < 60 and (bi < len(broad_eligible) or ei < len(explicit_eligible)):
+        for _ in range(3):
+            if bi < len(broad_eligible) and len(model_candidates) < 60:
+                model_candidates.append(broad_eligible[bi]); bi += 1
+        if ei < len(explicit_eligible) and len(model_candidates) < 60:
+            model_candidates.append(explicit_eligible[ei]); ei += 1
+    print(f"Hard relevance gate kept {len(eligible)} candidates; {len(model_candidates)} sent to selector")
+    if len(model_candidates) < 18:
+        raise RuntimeError(f"Hard relevance gate left only {len(model_candidates)} candidates; refusing weak publication")
+
+    prompt = build_model_prompt(model_candidates, existing_story_text(source))
     selection: dict[str, Any] = {}
     if OPENAI_API_KEY:
         try:
@@ -674,10 +781,10 @@ def run(force: bool = False) -> int:
         except Exception as e:
             print(f"WARN hosted selector failed; falling back to local selector: {e}", file=sys.stderr)
     if not selection:
-        selection = ollama_json(prompt, [c.cid for c in enriched])
+        selection = ollama_json(prompt, [c.cid for c in model_candidates])
     if not selection:
         raise RuntimeError("Both hosted and local news selectors failed")
-    headline, intro, selected = validate_selection(selection, enriched)
+    headline, intro, selected = validate_selection(selection, model_candidates)
     if len(selected) < 18: raise RuntimeError(f"Model produced only {len(selected)} qualifying items; refusing to publish below 18")
 
     guid, item = create_item(headline, intro, selected, at)
