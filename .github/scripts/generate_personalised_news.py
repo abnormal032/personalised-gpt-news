@@ -33,6 +33,8 @@ RETENTION = timedelta(hours=48)
 RECENT = timedelta(hours=4)
 MODEL = os.getenv("NEWS_MODEL", "qwen3:4b")
 OLLAMA = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_MODEL = os.getenv("OPENAI_NEWS_MODEL", "gpt-5.6-luna").strip()
 UA = "Mozilla/5.0 (compatible; PersonalisedGPTNews/2.0; +https://abnormal032.github.io/personalised-gpt-news/)"
 
 BROAD_FEEDS = [
@@ -296,6 +298,41 @@ def existing_story_text(text: str) -> str:
         if m:
             chunks.append(strip_cdata_text(m.group(1)))
     return "\n".join(chunks)[:12000]
+
+def openai_selection(prompt: str, timeout: int = 90) -> dict[str, Any]:
+    if not OPENAI_API_KEY:
+        return {}
+    payload = {
+        "model": OPENAI_MODEL,
+        "input": prompt,
+        "max_output_tokens": 400,
+    }
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    r = requests.post("https://api.openai.com/v1/responses", headers=headers, json=payload, timeout=timeout)
+    r.raise_for_status()
+    data = r.json()
+    texts: list[str] = []
+    for item in data.get("output", []):
+        if item.get("type") != "message":
+            continue
+        for content in item.get("content", []):
+            if content.get("type") == "output_text" and content.get("text"):
+                texts.append(str(content["text"]))
+    raw = "\n".join(texts).strip()
+    ids: list[str] = []
+    seen: set[str] = set()
+    for cid in re.findall(r"(?<![0-9a-f])[0-9a-f]{12}(?![0-9a-f])", raw, re.I):
+        cid = cid.lower()
+        if cid not in seen:
+            ids.append(cid)
+            seen.add(cid)
+    if not ids:
+        raise RuntimeError(f"OpenAI selector returned no candidate IDs: {raw[:300]}")
+    print(f"OpenAI selector ({OPENAI_MODEL}) returned {len(ids)} candidate IDs")
+    return {"ids": ids[:18]}
 
 def ollama_json(prompt: str, timeout: int = 300) -> dict[str, Any]:
     payload = {
@@ -613,7 +650,15 @@ def run(force: bool = False) -> int:
     if len(enriched) < 24: raise RuntimeError(f"Only {len(enriched)} candidates resolved to direct publisher URLs")
 
     prompt = build_model_prompt(enriched, existing_story_text(source))
-    headline, intro, selected = validate_selection(ollama_json(prompt), enriched)
+    selection: dict[str, Any] = {}
+    if OPENAI_API_KEY:
+        try:
+            selection = openai_selection(prompt)
+        except Exception as e:
+            print(f"WARN OpenAI selector failed; falling back to local selector: {e}", file=sys.stderr)
+    if not selection:
+        selection = ollama_json(prompt)
+    headline, intro, selected = validate_selection(selection, enriched)
     if len(selected) < 18: raise RuntimeError(f"Model produced only {len(selected)} qualifying items; refusing to publish below 18")
 
     guid, item = create_item(headline, intro, selected, at)
