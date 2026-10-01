@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import concurrent.futures
+import difflib
 import hashlib
 import html
 import json
@@ -76,6 +77,11 @@ PRACTICAL_QUERIES = {
     "privacy-security-broad": '(privacy OR data breach OR tracking OR surveillance OR encryption OR passkey) (Google OR Microsoft OR Meta OR WhatsApp OR Android OR browser OR bank OR airline) when:2d',
     "travel-practical-broad": '(New Zealand travel OR Australia travel OR airline) (visa OR entry rule OR airport closure OR flight disruption OR new route OR cancellation) when:3d',
     "consumer-finance-broad": '(New Zealand OR Australia) (mortgage OR interest rate OR bank fee OR payment OR credit card OR insurance OR tax) when:2d',
+    "nz-service-changes": '(New Zealand OR Wellington OR Auckland) ("price cut" OR "price increase" OR launches OR opens OR closes OR "service change" OR subscription OR "transport change") when:2d',
+    "nz-jobs-investment": '(New Zealand OR Wellington OR Auckland) (invests OR investment OR hiring OR layoffs OR "jobs created" OR closes OR opens) when:2d',
+    "au-service-changes": '(Australia OR Melbourne) (launches OR price OR service OR transport OR housing OR rent OR jobs OR "law change") when:2d',
+    "global-software-practical": '(Microsoft OR Google OR OpenAI OR Android OR Windows OR Steam OR Netflix OR Amazon) ("now available" OR launches OR released OR "price change" OR "subscription change" OR "ends support" OR "security update") when:2d',
+    "nz-air-travel": '("Air New Zealand" OR Qantas OR Jetstar OR "Fiji Airways") ("new route" OR cancels OR cancellation OR baggage OR fee OR fare OR schedule) when:3d',
 }
 
 
@@ -202,7 +208,7 @@ def collect_candidates() -> list[Candidate]:
         return out
 
     broad = diversify(broad, 30, 3)
-    practical = diversify(practical, 30, 4)
+    practical = diversify(practical, 40, 4)
     by_topic: dict[str, list[Candidate]] = {}
     for c in explicit:
         by_topic.setdefault(c.explicit_topic or "", []).append(c)
@@ -475,22 +481,26 @@ def _hard_reject(c: Candidate) -> bool:
     title = c.title.lower()
     topic = c.explicit_topic
 
-    # Noise and non-factual formats are never useful enough for this feed.
-    if any(x in t for x in (
+    generic_noise = (
         "opinion", "editorial", "commentary", "market talk", "roundup",
         "interview with", "letters to the editor", "photo gallery", "photos:",
-        "what i learned", "what a ", "look back", "podcast",
-    )):
+        "look back", "podcast", "help honour", "award nominations", "awards open",
+        "welcomes new president", "reminder physical media", "says law expert",
+    )
+    if any(x in t for x in generic_noise):
         return True
     if re.search(r"\b(could|would|might)\b", title) and topic is None:
         return True
 
-    # Explicit topics still have topic-specific hard gates.
     if topic == "war-fundamental":
-        return not any(x in t for x in (
-            "ceasefire", "peace deal", "peace agreement", "settlement",
-            "war ends", "war ended", "end of the war"
-        ))
+        if any(x in t for x in ("prevents peace", "claims", "alleged", "says", "warns", "talks", "negotiations", "proposal")):
+            return True
+        return re.search(
+            r"(ceasefire.{0,30}(agreed|signed|begins|takes effect)|"
+            r"peace (deal|agreement).{0,30}(agreed|signed|takes effect)|"
+            r"war (ends|ended)|settlement.{0,30}(agreed|signed|takes effect))",
+            t,
+        ) is None
     if topic in ("btc-move", "eth-move"):
         return re.search(r"\b(?:3\d|[4-9]\d|1\d\d)\s*%", t) is None
     if topic == "vix":
@@ -500,37 +510,81 @@ def _hard_reject(c: Candidate) -> bool:
             any(x in t for x in ("released", "release", "launch", "available now"))
             and any(x in t for x in ("aaa", "blockbuster", "playstation", "xbox", "steam"))
         )
-    if topic == "crypto-finance":
-        if any(x in t for x in ("market talk", "daily report", "roundup", "interview", "outlook")):
+    if topic == "longevity":
+        if "?" in c.title or any(x in t for x in ("explainer", "starting to find out", "could aging", "can aging")):
             return True
         return not any(x in t for x in (
-            "bitcoin", "ethereum", "crypto", "mortgage", "interest rate", "bank fee",
-            "payment", "credit card", "deposit rate", "tax", "insurance", "kiwisaver"
+            "study", "trial", "researchers", "research team", "results", "published",
+            "clinical", "experiment", "peer-reviewed"
+        ))
+    if topic == "crypto-finance":
+        if any(x in t for x in (
+            "market talk", "daily report", "roundup", "interview", "outlook",
+            "institutional clients", "institutional investors"
+        )):
+            return True
+        return not any(x in t for x in (
+            "bitcoin", "ethereum", "crypto exchange", "mortgage", "interest rate",
+            "bank fee", "payment", "credit card", "deposit rate", "tax", "insurance",
+            "kiwisaver", "consumer banking"
         ))
     if topic == "australia-practical":
         return "australia" not in t or not any(x in t for x in (
             "law", "rule", "fee", "price", "rent", "housing", "job", "wage",
-            "transport", "visa", "residence", "tax", "bank", "insurance"
+            "transport", "visa", "residence", "tax", "bank", "insurance", "closure", "opens"
         ))
     if topic == "privacy":
         return not (
             any(x in t for x in ("privacy", "data collection", "surveillance", "data breach", "tracking"))
             and any(x in t for x in ("new", "change", "launch", "law", "rule", "update", "breach", "ban", "ends"))
         )
+    if topic == "wellington-hiking":
+        return not (
+            "wellington" in t
+            and any(x in t for x in ("trail", "track", "walk", "hike", "reserve", "access"))
+            and any(x in t for x in ("open", "reopen", "close", "closure", "upgrade", "access change"))
+        )
+    if topic == "wellington-activities":
+        if any(x in t for x in ("criminal charges", "court", "lawsuit", "prosecution", "water plant", "wastewater")):
+            return True
+        return not (
+            "wellington" in t
+            and any(x in t for x in ("opens", "opening", "new venue", "launch", "new attraction", "new experience", "new activity"))
+        )
+    if topic == "gaming-streaming":
+        if any(x in t for x in ("reminder", "opinion", "review", "imdb")):
+            return True
+        return not (
+            any(x in t for x in ("price", "ownership", "drm", "preservation", "subscription", "access", "availability"))
+            and any(x in t for x in ("changes", "changed", "cuts", "removes", "ends", "launches", "released", "adds", "allows"))
+        )
     if topic == "fabric-melbourne":
         return "melbourne" not in t or "microsoft fabric" not in t
     if topic == "australia-444":
         return not any(x in t for x in ("special category visa", "subclass 444", "new zealand citizens"))
     if topic == "nz-tenancy":
-        return not any(x in t for x in ("tenancy", "residential tenancies", "renters", "landlord"))
+        if any(x in t for x in ("fined", "tribunal case", "court case", "property firm", "breaching tenancy laws")):
+            return True
+        return not (
+            any(x in t for x in ("tenancy", "residential tenancies", "renters", "landlord"))
+            and any(x in t for x in ("new law", "law change", "amendment", "reform", "takes effect", "commences", "passed", "proposed", "rule change", "rights"))
+        )
+    if topic == "travel-from-nz":
+        return not (
+            any(x in t for x in ("fiji", "bali", "lombok", "thailand", "vietnam", "maldives"))
+            and any(x in t for x in ("visa", "entry", "airport", "flight", "closure", "cancel", "disruption", "earthquake", "volcano", "cyclone", "unrest"))
+            and any(x in t for x in ("new", "changes", "changed", "closed", "cancelled", "suspended", "eruption", "earthquake", "cyclone"))
+        )
     if topic:
         return False
 
-    # Broad discovery must have a concrete practical path to the NZ reader.
     if any(x in t for x in (
-        "princess ", " prince ", "royal family", "celebrity", "red carpet",
-        "funeral", "obituary", "human interest", "was crowned king",
+        "princess ", " prince ", "royal family", "celebrity", "red carpet", "funeral",
+        "obituary", "human interest", "was crowned king", "awards", "nomination",
+        "new president", "bar association", "americas launch", "boat show",
     )):
+        return True
+    if "?" in c.title:
         return True
 
     conflict = any(x in t for x in (
@@ -538,9 +592,7 @@ def _hard_reject(c: Candidate) -> bool:
         "tigray", "nato", "missile", "air strike", "airstrike", "drone attack",
         "nuclear threat", "fighters killed", "civilians killed", "explosions heard"
     ))
-    fundamental = any(x in t for x in (
-        "ceasefire", "peace deal", "peace agreement", "settlement", "war ends", "war ended"
-    ))
+    fundamental = any(x in t for x in ("ceasefire", "peace deal", "peace agreement", "war ends", "war ended"))
     if conflict and not fundamental:
         return True
 
@@ -553,16 +605,22 @@ def _hard_reject(c: Candidate) -> bool:
 
     if any(x in t for x in (
         "stabbing", "shooting", "home break-in", "break-ins", "car crash", "murder",
-        "arson", "sinks yacht", "rescued alive"
-    )) and not any(x in t for x in ("new zealand law", "australia law", "recall", "rule change")):
+        "arson", "sinks yacht", "rescued alive", "criminal charges", "charged with"
+    )) and not any(x in t for x in ("new law", "rule change", "service closure")):
         return True
 
-    geo = any(x in t for x in ("new zealand", "nz ", "wellington", "auckland", "australia", "melbourne"))
-    concrete = any(x in t for x in (
-        "launch", "release", "released", "available", "price", "fee", "cost", "law",
-        "rule", "ban", "recall", "closure", "reopen", "opens", "ends", "shuts down",
-        "interest rate", "mortgage", "rent", "tax", "visa", "entry", "jobs", "wages",
-        "subscription", "ownership", "security update", "data breach"
+    appointment = any(x in title for x in ("appoints", "named chief", "new chief executive", "new president"))
+    expansion = any(x in t for x in ("invest", "investment", "jobs", "expansion", "launches", "new service"))
+    if appointment and not expansion:
+        return True
+
+    geo = any(x in t for x in ("new zealand", "wellington", "auckland", "australia", "melbourne"))
+    material_change = any(x in t for x in (
+        "price cut", "price increase", "price falls", "price drop", "below $", "fee change",
+        "launches", "released", "now available", "opens", "closes", "closure", "reopens",
+        "service change", "new route", "cancels", "cancelled", "interest rate", "mortgage",
+        "rent", "tax change", "visa", "entry rule", "jobs at risk", "jobs created",
+        "investment", "subscription change", "security update", "data breach", "recall"
     ))
     global_product = any(x in t for x in (
         "microsoft", "google", "android", "windows", "chatgpt", "openai", "steam",
@@ -574,14 +632,35 @@ def _hard_reject(c: Candidate) -> bool:
         "password", "passkey", "encryption", "surveillance"
     ))
 
-    if geo and concrete:
+    if geo and material_change:
         return False
-    if global_product and concrete:
+    if global_product and material_change:
         return False
-    if privacy_security and concrete:
+    if privacy_security and material_change:
         return False
-
     return True
+
+def _story_tokens(c: Candidate) -> set[str]:
+    stop = {"new", "zealand", "australia", "wellington", "auckland", "says", "after", "from", "with", "over", "into", "for", "the", "and"}
+    words = [w for w in normalize_title(c.title).split() if len(w) >= 4 and w not in stop]
+    stems = set()
+    for w in words:
+        if w.endswith("ies") and len(w) > 5:
+            w = w[:-3] + "y"
+        elif w.endswith("es") and len(w) > 5:
+            w = w[:-2]
+        elif w.endswith("s") and len(w) > 5:
+            w = w[:-1]
+        stems.add(w)
+    return stems
+
+def _same_story(a: Candidate, b: Candidate) -> bool:
+    ta, tb = _story_tokens(a), _story_tokens(b)
+    if not ta or not tb:
+        return False
+    overlap = len(ta & tb) / max(1, min(len(ta), len(tb)))
+    seq = difflib.SequenceMatcher(None, normalize_title(a.title), normalize_title(b.title)).ratio()
+    return overlap >= 0.5 or seq >= 0.72
 
 def _candidate_flags(c: Candidate) -> dict[str, bool]:
     text = f"{c.title} {c.snippet} {c.explicit_topic or ''}".lower()
@@ -669,6 +748,8 @@ def validate_selection(data: dict[str, Any], candidates: list[Candidate]) -> tup
         if len(out) >= 18:
             break
         if not c.direct_url or _hard_reject(c) or not can_add(c):
+            continue
+        if any(_same_story(c, row["candidate"]) for row in out):
             continue
         flags = _candidate_flags(c)
         out.append({
