@@ -334,18 +334,32 @@ def openai_selection(prompt: str, timeout: int = 90) -> dict[str, Any]:
     print(f"OpenAI selector ({OPENAI_MODEL}) returned {len(ids)} candidate IDs")
     return {"ids": ids[:18]}
 
-def ollama_json(prompt: str, timeout: int = 300) -> dict[str, Any]:
+def ollama_json(prompt: str, allowed_ids: list[str], timeout: int = 300) -> dict[str, Any]:
+    schema = {
+        "type": "object",
+        "properties": {
+            "ids": {
+                "type": "array",
+                "items": {"type": "string", "enum": allowed_ids},
+                "minItems": 18,
+                "maxItems": 18,
+            }
+        },
+        "required": ["ids"],
+        "additionalProperties": False,
+    }
     payload = {
         "model": MODEL,
-        "prompt": "/no_think\n" + prompt,
+        "prompt": "/no_think\n" + prompt + '\nReturn JSON only: {"ids":["...exact candidate ids..."]}.',
         "stream": False,
+        "format": schema,
         "think": False,
         "keep_alive": "10m",
         "options": {
             "temperature": 0.0,
             "top_p": 0.8,
-            "num_ctx": 4096,
-            "num_predict": 220,
+            "num_ctx": 8192,
+            "num_predict": 300,
         },
     }
     for attempt in range(2):
@@ -353,18 +367,21 @@ def ollama_json(prompt: str, timeout: int = 300) -> dict[str, Any]:
             r = requests.post(OLLAMA, json=payload, timeout=timeout)
             r.raise_for_status()
             raw = str(r.json().get("response", "")).strip()
+            data = json.loads(raw)
+            raw_ids = data.get("ids", []) if isinstance(data, dict) else []
+            allowed = set(allowed_ids)
             ids: list[str] = []
             seen: set[str] = set()
-            for cid in re.findall(r"(?<![0-9a-f])[0-9a-f]{12}(?![0-9a-f])", raw, re.I):
-                cid = cid.lower()
-                if cid not in seen:
+            for value in raw_ids:
+                cid = str(value).lower().strip()
+                if cid in allowed and cid not in seen:
                     ids.append(cid)
                     seen.add(cid)
-            if ids:
-                print(f"Local selector returned {len(ids)} candidate IDs")
+            if len(ids) >= 18:
+                print(f"Local structured selector returned {len(ids)} valid candidate IDs")
                 return {"ids": ids[:18]}
-            print(f"WARN local selector returned no candidate IDs: {raw[:300]}", file=sys.stderr)
-        except requests.RequestException as e:
+            print(f"WARN local structured selector returned only {len(ids)} valid IDs: {raw[:300]}", file=sys.stderr)
+        except (requests.RequestException, ValueError) as e:
             print(f"WARN local model request attempt {attempt + 1} failed: {e}", file=sys.stderr)
     return {}
 
@@ -649,10 +666,17 @@ def run(force: bool = False) -> int:
     enriched = enrich_candidates(candidates)
     if len(enriched) < 24: raise RuntimeError(f"Only {len(enriched)} candidates resolved to direct publisher URLs")
 
-    if not OPENAI_API_KEY:
-        raise RuntimeError("OPENAI_API_KEY GitHub Actions secret is required for production news selection")
     prompt = build_model_prompt(enriched, existing_story_text(source))
-    selection = openai_selection(prompt)
+    selection: dict[str, Any] = {}
+    if OPENAI_API_KEY:
+        try:
+            selection = openai_selection(prompt)
+        except Exception as e:
+            print(f"WARN hosted selector failed; falling back to local selector: {e}", file=sys.stderr)
+    if not selection:
+        selection = ollama_json(prompt, [c.cid for c in enriched])
+    if not selection:
+        raise RuntimeError("Both hosted and local news selectors failed")
     headline, intro, selected = validate_selection(selection, enriched)
     if len(selected) < 18: raise RuntimeError(f"Model produced only {len(selected)} qualifying items; refusing to publish below 18")
 
