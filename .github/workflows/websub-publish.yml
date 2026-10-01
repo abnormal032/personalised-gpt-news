@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: write
+  copilot-requests: write
 
 concurrency:
   group: websub-publish
@@ -21,6 +22,17 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
+      - name: Copilot capability diagnostic
+        if: github.event_name == 'push' && contains(github.event.head_commit.message, 'Test Copilot publishing engine')
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          npm install -g @github/copilot
+          result="$(copilot -p 'Reply with exactly COPILOT_OK and nothing else.' -s)"
+          echo "$result"
+          test "$result" = "COPILOT_OK"
+
       - name: Check out repository
         uses: actions/checkout@v4
         with:
