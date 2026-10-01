@@ -496,12 +496,13 @@ def run(force: bool = False) -> int:
     latest = latest_valid_pubdate(source, at)
     if latest and at-latest < RECENT and not force:
         kept = valid_existing_items(source, at)
-        normalized = rebuild(base_channel(source, at), kept)
-        if normalized != rss or normalized != feed:
+        current = [x.strip() for x in existing_items(source)]
+        if kept != current or rss != feed:
+            normalized = rebuild(base_channel(source, at), kept)
             RSS_PATH.write_text(normalized, encoding="utf-8"); FEED_PATH.write_text(normalized, encoding="utf-8")
-            print("Recent valid briefing exists; synchronized retention/metadata only.")
+            print("Recent valid briefing exists; synchronized retention/cleanup only.")
         else:
-            print("Recent valid briefing exists; generation skipped.")
+            print("Recent valid briefing exists; generation skipped with no feed write.")
         REPORT_PATH.write_text(json.dumps({"status":"skipped_recent","latest":latest.isoformat()},indent=2),encoding="utf-8")
         return 0
 
