@@ -297,13 +297,14 @@ def existing_story_text(text: str) -> str:
             chunks.append(strip_cdata_text(m.group(1)))
     return "\n".join(chunks)[:12000]
 
-def ollama_json(prompt: str, timeout: int = 210) -> dict[str, Any]:
+def ollama_json(prompt: str, timeout: int = 150) -> dict[str, Any]:
     payload = {
         "model": MODEL,
         "prompt": "/no_think\n" + prompt,
         "stream": False,
         "format": "json",
-        "options": {"temperature": 0.05, "top_p": 0.8, "num_ctx": 8192, "num_predict": 2300},
+        "think": False,
+        "options": {"temperature": 0.05, "top_p": 0.8, "num_ctx": 8192, "num_predict": 1800},
     }
     r = requests.post(OLLAMA, json=payload, timeout=timeout)
     r.raise_for_status()
