@@ -1,5 +1,5 @@
 name: Publish WebSub update
-# production pipeline v4
+# production pipeline v6
 
 on:
   push:
