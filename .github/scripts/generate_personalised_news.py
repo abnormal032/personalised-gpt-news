@@ -34,7 +34,7 @@ RECENT = timedelta(hours=4)
 MODEL = os.getenv("NEWS_MODEL", "qwen2.5:3b")
 OLLAMA = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
-OPENAI_MODEL = os.getenv("OPENAI_NEWS_MODEL", "gpt-5.6-luna").strip()
+OPENAI_MODEL = os.getenv("OPENAI_NEWS_MODEL", "gpt-5.6-terra").strip()
 UA = "Mozilla/5.0 (compatible; PersonalisedGPTNews/2.0; +https://abnormal032.github.io/personalised-gpt-news/)"
 
 BROAD_FEEDS = [
@@ -649,15 +649,10 @@ def run(force: bool = False) -> int:
     enriched = enrich_candidates(candidates)
     if len(enriched) < 24: raise RuntimeError(f"Only {len(enriched)} candidates resolved to direct publisher URLs")
 
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY GitHub Actions secret is required for production news selection")
     prompt = build_model_prompt(enriched, existing_story_text(source))
-    selection: dict[str, Any] = {}
-    if OPENAI_API_KEY:
-        try:
-            selection = openai_selection(prompt)
-        except Exception as e:
-            print(f"WARN OpenAI selector failed; falling back to local selector: {e}", file=sys.stderr)
-    if not selection:
-        selection = ollama_json(prompt)
+    selection = openai_selection(prompt)
     headline, intro, selected = validate_selection(selection, enriched)
     if len(selected) < 18: raise RuntimeError(f"Model produced only {len(selected)} qualifying items; refusing to publish below 18")
 
