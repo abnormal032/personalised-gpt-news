@@ -25,7 +25,7 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     steps:
       - name: Check out repository
@@ -78,6 +78,20 @@ jobs:
           done
           curl -fsS http://127.0.0.1:11434/api/tags >/dev/null
           ollama pull qwen3:1.7b
+          python3 - <<'PY'
+          import requests
+          payload = {
+              "model": "qwen3:1.7b",
+              "prompt": "/no_think\nReply with exactly: OK",
+              "stream": False,
+              "think": False,
+              "keep_alive": "10m",
+              "options": {"num_ctx": 1024, "num_predict": 8},
+          }
+          r = requests.post("http://127.0.0.1:11434/api/generate", json=payload, timeout=120)
+          r.raise_for_status()
+          print("Local model warm-up complete.")
+          PY
 
       - name: Install news dependencies
         if: steps.mode.outputs.generate == 'true'
