@@ -207,8 +207,8 @@ def collect_candidates() -> list[Candidate]:
                 break
         return out
 
-    broad = diversify(broad, 30, 3)
-    practical = diversify(practical, 40, 4)
+    broad = diversify(broad, 70, 4)
+    practical = diversify(practical, 110, 5)
     by_topic: dict[str, list[Candidate]] = {}
     for c in explicit:
         by_topic.setdefault(c.explicit_topic or "", []).append(c)
@@ -221,7 +221,7 @@ def collect_candidates() -> list[Candidate]:
             rows_for_topic = by_topic.get(topic, [])
             if rank < len(rows_for_topic):
                 explicit_out.append(rows_for_topic[rank])
-    explicit_out = explicit_out[:30]
+    explicit_out = explicit_out[:51]
     combined = broad + practical + explicit_out
     print(f"Collected {len(rows)} unique candidates; broad={len(broad)} practical={len(practical)} explicit={len(explicit_out)}; sending {len(combined)} to enrichment")
     return combined
@@ -872,13 +872,15 @@ def run(force: bool = False) -> int:
     explicit_eligible = [c for c in eligible if c.explicit_topic is not None]
     model_candidates: list[Candidate] = []
     bi = ei = 0
-    while len(model_candidates) < 60 and (bi < len(broad_eligible) or ei < len(explicit_eligible)):
+    while len(model_candidates) < 90 and (bi < len(broad_eligible) or ei < len(explicit_eligible)):
         for _ in range(3):
-            if bi < len(broad_eligible) and len(model_candidates) < 60:
+            if bi < len(broad_eligible) and len(model_candidates) < 90:
                 model_candidates.append(broad_eligible[bi]); bi += 1
-        if ei < len(explicit_eligible) and len(model_candidates) < 60:
+        if ei < len(explicit_eligible) and len(model_candidates) < 90:
             model_candidates.append(explicit_eligible[ei]); ei += 1
     print(f"Hard relevance gate kept {len(eligible)} candidates (broad={len(broad_eligible)}, explicit={len(explicit_eligible)}); {len(model_candidates)} sent to selector")
+    for c in eligible:
+        print(f"ELIGIBLE [{c.origin}] [{c.explicit_topic or 'broad'}] {c.title} :: {c.source}")
     if len(model_candidates) < 18:
         raise RuntimeError(f"Hard relevance gate left only {len(model_candidates)} candidates; refusing weak publication")
 
